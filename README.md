@@ -72,18 +72,25 @@ export LOCAL_ASR_MODEL=/models/whisper-small
 ## Offline transcription
 
 ```bash
-python helpers/transcribe.py clip.mp4 --offline --model /models/whisper-small
-python helpers/transcribe_batch.py ./takes --offline --model /models/whisper-small --workers 1
+python helpers/transcribe.py clip.mp4 --offline --model /models/faster-whisper-base \
+  --event-model /models/audioset-ast --diarization-model /models/pyannote-community-1
+python helpers/transcribe_batch.py ./takes --offline --workers 1 \
+  --model /models/faster-whisper-base --event-model /models/audioset-ast \
+  --diarization-model /models/pyannote-community-1
 python helpers/pack_transcripts.py --edit-dir ./takes/edit
 python helpers/render.py ./takes/edit/edl.json -o ./takes/edit/final.mp4 --preview
 ```
 
 Local output preserves the Scribe-compatible top-level `words` list (`word`, `spacing`,
-and `audio_event` entries), including word timestamps and speaker IDs. Real diarization
-is used only when `LOCAL_DIARIZATION_MODEL` points to a locally available pyannote
-pipeline; otherwise all speech is marked `speaker_0`. The built-in deterministic audio
-heuristic provides best-effort laughter/applause cues, not production-grade classification.
-Use `--backend elevenlabs` only when you explicitly want the hosted service and have
+and `audio_event` entries), including word timestamps and speaker IDs. The strict local
+path requires three pre-provisioned model directories: faster-whisper for ASR,
+`MIT/ast-finetuned-audioset-10-10-0.4593` for laughter/applause classification, and a
+local pyannote diarization pipeline. Missing or broken event/diarization models fail
+clearly instead of silently degrading. `--degraded-mode` is an explicit fallback for
+speaker_0 plus the legacy signal heuristic and is not a full Scribe replacement.
+See [`docs/local-scribe-offline.md`](docs/local-scribe-offline.md) for provisioning,
+offline verification, hardware requirements, and cost boundaries. Use
+`--backend elevenlabs` only when you explicitly want the hosted service and have
 `ELEVENLABS_API_KEY`; `--backend auto` prefers it when a key exists.
 
 ## How it works

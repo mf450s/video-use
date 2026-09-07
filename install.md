@@ -15,23 +15,32 @@ Three things must exist on this machine:
 
 1. The `video-use` repo cloned somewhere stable.
 2. `ffmpeg` and `ffprobe` on `$PATH` (plus optional `yt-dlp` for online sources).
-3. Either a provisioned local Whisper model (offline mode) or an ElevenLabs API key (hosted mode).
+3. Provisioned local ASR, audio-event, and diarization models (offline mode), or an ElevenLabs API key (hosted mode).
 
 ## Local/offline mode (recommended when no key/network is allowed)
 
-Install the optional ASR dependency and provision model weights ahead of time:
+Install the optional local dependencies and provision all model weights ahead of time:
 
 ```bash
 pip install -e '.[local-transcription]'
-export LOCAL_ASR_MODEL=/models/whisper-small
-python helpers/transcribe.py /path/to/clip.mp4 --offline --model "$LOCAL_ASR_MODEL"
+pip install -e '.[local-events,local-diarization]'
+export LOCAL_ASR_MODEL=/models/faster-whisper-base
+export LOCAL_EVENT_MODEL=/models/audioset-ast
+export LOCAL_DIARIZATION_MODEL=/models/pyannote-community-1
+python helpers/transcribe.py /path/to/clip.mp4 --offline \
+  --model "$LOCAL_ASR_MODEL" --event-model "$LOCAL_EVENT_MODEL" \
+  --diarization-model "$LOCAL_DIARIZATION_MODEL"
 ```
 
 `faster-whisper` CPU int8 works on ordinary machines; CUDA needs a compatible NVIDIA
-runtime. Model weights are not downloaded by the helper. For real diarization, install
-`.[local-diarization]` and set `LOCAL_DIARIZATION_MODEL` to a local pyannote pipeline.
-If unavailable, transcription remains functional with `speaker_0`. Laughter/applause
-are best-effort local signal heuristics and may be missed or mislabeled.
+runtime. The audio-event model uses Transformers and an AST AudioSet checkpoint. Model
+weights are not downloaded by the helper. For diarization, install `.[local-diarization]`
+and set `LOCAL_DIARIZATION_MODEL` to a complete local pyannote pipeline. Missing or
+broken event and diarization models fail in the normal path. Use `--degraded-mode` only
+when explicitly accepting `speaker_0` and the legacy event heuristic.
+
+See `docs/local-scribe-offline.md` for exact model repositories, provisioning commands,
+offline network checks, and the real-model E2E sequence.
 
 And one thing must be true about the current agent:
 

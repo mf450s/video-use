@@ -59,7 +59,7 @@ The skill lives in `video-use/`. User footage lives wherever they put it. All se
 
 First-time install lives in `install.md` (clone, deps, ffmpeg, skill registration, API key). Don't re-run it every session; on cold start just verify:
 
-- For offline work, a downloaded local Whisper model is available and `LOCAL_ASR_MODEL` (or `--model`) points to it. No API key or network is needed.
+- For offline work, downloaded local ASR, audio-event, and diarization models are available. `LOCAL_ASR_MODEL`/`--model`, `LOCAL_EVENT_MODEL`/`--event-model`, and `LOCAL_DIARIZATION_MODEL`/`--diarization-model` point to them. No API key or network is needed.
 - For hosted quality, `ELEVENLABS_API_KEY` may be set in the environment or `.env`; ask only when the user selects the ElevenLabs backend.
 - `ffmpeg` + `ffprobe` on PATH.
 - Python deps installed (`uv sync` or `pip install -e .` inside the repo).
@@ -72,7 +72,7 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 
 ## Helpers
 
-- **`transcribe.py <video>`** — local/offline Whisper transcription by default; use `--model <downloaded-model>` and `--offline`. `--backend elevenlabs` selects hosted Scribe. Cached.
+- **`transcribe.py <video>`** — strict local/offline Whisper plus local event classification and pyannote diarization by default; use `--model`, `--event-model`, `--diarization-model`, and `--offline`. `--degraded-mode` is an explicit non-production fallback. `--backend elevenlabs` selects hosted Scribe. Cached.
 - **`transcribe_batch.py <videos_dir>`** — batch transcription (local models default to one worker to avoid duplicate memory). Use `--offline --model <downloaded-model>` for multi-take.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.

@@ -28,6 +28,12 @@ def main() -> None:
     ap.add_argument("--backend", choices=("local", "auto", "elevenlabs", "scribe"), default="local")
     ap.add_argument("--offline", action="store_true", help="Force local backend and never use network")
     ap.add_argument("--model", default=None, help="Downloaded local ASR model directory/name")
+    ap.add_argument("--event-model", default=None,
+                    help="Downloaded local AudioSet classifier directory")
+    ap.add_argument("--diarization-model", default=None,
+                    help="Downloaded local pyannote pipeline directory")
+    ap.add_argument("--degraded-mode", action="store_true",
+                    help="Explicitly allow speaker_0 and the legacy event heuristic")
     args = ap.parse_args()
     videos_dir = args.videos_dir.resolve()
     if not videos_dir.is_dir():
@@ -53,7 +59,9 @@ def main() -> None:
         futures = {pool.submit(transcribe_one, video=v, edit_dir=edit_dir, api_key=api_key,
                                language=args.language, num_speakers=args.num_speakers,
                                verbose=False, audio_track=args.audio_track, backend=backend,
-                               model=args.model): v for v in pending}
+                               model=args.model, event_model=args.event_model,
+                               diarization_model=args.diarization_model,
+                               degraded_mode=args.degraded_mode): v for v in pending}
         for future in as_completed(futures):
             video = futures[future]
             try:

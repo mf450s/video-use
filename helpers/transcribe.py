@@ -1,8 +1,12 @@
 """Offline-first, Scribe-compatible video transcription.
 
-The local backend uses an already-installed faster-whisper (preferred) or
-openai-whisper model.  It never needs an API key.  Optional pyannote diarization
-is used when a local pipeline is configured; otherwise speaker_0 is retained.
+The local backend uses already-provisioned model directories only.  ASR uses
+faster-whisper (preferred) or an openai-whisper checkpoint, diarization uses a
+local pyannote pipeline, and audio events use a local Transformers audio-event
+classifier.  The normal local path fails clearly when one of those models is
+missing.  ``--degraded-mode`` is the only opt-in path that assigns speaker_0
+and uses the legacy signal heuristic.
+
 The emitted JSON deliberately keeps ElevenLabs' ``words`` list shape so the
 packing and rendering helpers can consume either backend.
 """
@@ -24,6 +28,10 @@ from typing import Any
 import requests
 
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+EVENT_LABELS = {
+    "laughter": ("laughter", "laugh", "chuckle", "giggle"),
+    "applause": ("applause", "clap", "clapping"),
+}
 
 
 def load_api_key() -> str:
@@ -117,6 +125,19 @@ def _normalise_asr_segments(segments: Any) -> list[dict]:
     return words
 
 
+def _openai_whisper_checkpoint(model_path: Path) -> Path:
+    """Resolve a local OpenAI Whisper checkpoint without a model-name download."""
+    if model_path.is_file():
+        return model_path
+    checkpoints = sorted(model_path.glob("*.pt"))
+    if len(checkpoints) == 1:
+        return checkpoints[0]
+    raise RuntimeError(
+        f"openai-whisper needs one local .pt checkpoint in {model_path}; "
+        "a model name is not accepted in offline mode"
+    )
+
+
 def _insert_spacing(words: list[dict]) -> list[dict]:
     result: list[dict] = []
     for index, item in enumerate(words):
@@ -135,13 +156,8 @@ def _load_samples(wav_path: Path) -> tuple[list[float], int]:
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0, rate
 
 
-def detect_audio_events(wav_path: Path) -> list[dict]:
-    """Detect coarse local laughter/applause cues without a network model.
-
-    This is intentionally conservative and deterministic: short energetic,
-    noisy bursts become laughter and repeated bursts become applause.  A real
-    event model can replace this function without changing the JSON contract.
-    """
+def _detect_audio_events_heuristic(wav_path: Path) -> list[dict]:
+    """Legacy fallback, available only through explicit degraded mode."""
     import numpy as np
     samples, rate = _load_samples(wav_path)
     size, hop = max(1, int(rate * .20)), max(1, int(rate * .10))
@@ -168,27 +184,158 @@ def detect_audio_events(wav_path: Path) -> list[dict]:
     return merged
 
 
-def _speaker_segments(wav_path: Path, num_speakers: int | None) -> Any:
-    """Return pyannote turns from a configured *local* pipeline, if possible."""
-    model_path = os.environ.get("LOCAL_DIARIZATION_MODEL")
+def _normalise_event_label(label: str) -> str | None:
+    value = label.lower().replace("_", " ").replace("-", " ")
+    for event, aliases in EVENT_LABELS.items():
+        if any(alias in value for alias in aliases):
+            return event
+    return None
+
+
+def detect_audio_events(wav_path: Path, model: str | None = None,
+                        degraded_mode: bool = False) -> list[dict]:
+    """Classify laughter and applause with a local AudioSet model.
+
+    ``model`` must point at a complete, locally provisioned Transformers audio
+    classification directory.  No model identifier is accepted here: that
+    would allow an accidental runtime download.  The classifier is run over
+    overlapping ten-second windows and only the two supported event labels are
+    emitted.  The heuristic remains available solely when ``degraded_mode`` is
+    explicitly true.
+    """
+    model_path = model or os.environ.get("LOCAL_EVENT_MODEL")
     if not model_path:
-        return None
-    if not Path(model_path).exists():
-        print(f"warning: local diarization model path does not exist: {model_path}", file=sys.stderr)
-        return None
+        if degraded_mode:
+            return _detect_audio_events_heuristic(wav_path)
+        raise RuntimeError(
+            "local audio-event model is required; set LOCAL_EVENT_MODEL to a "
+            "downloaded AudioSet classifier directory (or pass --event-model). "
+            "Use --degraded-mode only to opt into the legacy heuristic."
+        )
+    path = Path(model_path)
+    if not path.is_dir():
+        raise RuntimeError(
+            f"local audio-event model path does not exist or is not a directory: {path}; "
+            "provision weights before offline execution"
+        )
+    try:
+        import numpy as np
+        from transformers import pipeline
+    except Exception as exc:
+        raise RuntimeError(
+            "the local audio-event model needs transformers and torch; install "
+            "the [local-events] extra"
+        ) from exc
+
+    samples, rate = _load_samples(wav_path)
+    window = max(1, int(rate * 10.0))
+    hop = max(1, int(rate * 5.0))
+    if not len(samples):
+        return []
+    device_name = os.environ.get("LOCAL_EVENT_DEVICE", "cpu").lower()
+    device = 0 if device_name.startswith("cuda") else -1
+    old_offline = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        classifier = pipeline(
+            "audio-classification",
+            model=str(path),
+            device=device,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"local audio-event model failed to load from {path}: {exc}") from exc
+    finally:
+        if old_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = old_offline
+
+    events: list[dict] = []
+    for start in range(0, len(samples), hop):
+        frame = samples[start:start + window]
+        if len(frame) < max(1, int(rate * 0.25)):
+            break
+        try:
+            predictions = classifier({"raw": np.asarray(frame, dtype=np.float32),
+                                      "sampling_rate": rate}, top_k=None)
+        except Exception as exc:
+            raise RuntimeError(f"local audio-event inference failed at {start / rate:.2f}s: {exc}") from exc
+        if isinstance(predictions, dict):
+            predictions = [predictions]
+        for prediction in predictions or []:
+            label = _normalise_event_label(str(prediction.get("label", "")))
+            score = float(prediction.get("score", 0.0))
+            if label and score >= float(os.environ.get("LOCAL_EVENT_THRESHOLD", "0.35")):
+                event = {"type": "audio_event", "text": label,
+                         "start": round(start / rate, 3),
+                         "end": round(min(len(samples) / rate, (start + len(frame)) / rate), 3),
+                         "score": round(score, 4)}
+                events.append(event)
+                break
+
+    merged: list[dict] = []
+    for event in sorted(events, key=lambda item: (item["start"], item["text"])):
+        if (merged and merged[-1]["text"] == event["text"]
+                and event["start"] - merged[-1]["end"] <= 2.5):
+            merged[-1]["end"] = event["end"]
+            merged[-1]["score"] = max(merged[-1]["score"], event["score"])
+        else:
+            merged.append(event)
+    return merged
+
+
+def _speaker_segments(wav_path: Path, num_speakers: int | None,
+                      model: str | None = None, degraded_mode: bool = False) -> Any:
+    """Return turns from a configured *local* pyannote pipeline.
+
+    Missing or broken diarization is an error in the normal path.  This is
+    deliberate: returning ``None`` makes a supposedly diarized transcript look
+    valid while silently assigning every word to one speaker.
+    """
+    model_path = model or os.environ.get("LOCAL_DIARIZATION_MODEL")
+    if not model_path:
+        if degraded_mode:
+            return None
+        raise RuntimeError(
+            "local speaker diarization is required; set LOCAL_DIARIZATION_MODEL "
+            "to a downloaded pyannote pipeline directory. Use --degraded-mode "
+            "only to opt into speaker_0."
+        )
+    path = Path(model_path)
+    if not path.is_dir():
+        if degraded_mode:
+            return None
+        raise RuntimeError(f"local diarization model path does not exist: {path}")
     try:
         from pyannote.audio import Pipeline
-        pipeline = Pipeline.from_pretrained(model_path)
-        diarization = pipeline(str(wav_path), num_speakers=num_speakers)
+    except Exception as exc:
+        raise RuntimeError(
+            "the local diarization model needs pyannote.audio; install the "
+            "[local-diarization] extra"
+        ) from exc
+    old_offline = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        diarization_pipeline = Pipeline.from_pretrained(str(path))
+        kwargs = {} if num_speakers is None else {"num_speakers": num_speakers}
+        diarization = diarization_pipeline(str(wav_path), **kwargs)
         return [(float(turn.start), float(turn.end), str(speaker))
                 for turn, _, speaker in diarization.itertracks(yield_label=True)]
     except Exception as exc:
-        print(f"warning: local diarization unavailable: {exc}", file=sys.stderr)
-        return None
+        if degraded_mode:
+            return None
+        raise RuntimeError(f"local diarization pipeline failed from {path}: {exc}") from exc
+    finally:
+        if old_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = old_offline
 
 
 def transcribe_local(audio_path: Path, language: str | None = None,
-                     num_speakers: int | None = None, model: str | None = None) -> dict:
+                     num_speakers: int | None = None, model: str | None = None,
+                     event_model: str | None = None, diarization_model: str | None = None,
+                     degraded_mode: bool = False) -> dict:
     """Run local ASR and return the compatible Scribe response shape."""
     model_name = model or os.environ.get("LOCAL_ASR_MODEL")
     if not model_name:
@@ -212,7 +359,8 @@ def transcribe_local(audio_path: Path, language: str | None = None,
         errors.append(f"faster-whisper: {exc}")
         try:
             import whisper
-            engine = whisper.load_model(model_name)
+            checkpoint = _openai_whisper_checkpoint(Path(model_name))
+            engine = whisper.load_model(str(checkpoint), download_root=str(checkpoint.parent))
             result = engine.transcribe(str(audio_path), language=language, word_timestamps=True,
                                        fp16=False)
             raw_segments = result.get("segments", [])
@@ -223,26 +371,35 @@ def transcribe_local(audio_path: Path, language: str | None = None,
                                "and provide a downloaded model. " + " | ".join(errors)) from second
 
     words = _normalise_asr_segments(raw_segments)
-    turns = _speaker_segments(audio_path, num_speakers)
+    turns = _speaker_segments(audio_path, num_speakers, diarization_model, degraded_mode)
+    if words and not turns and not degraded_mode:
+        raise RuntimeError(
+            "local diarization returned no speaker turns for a non-empty transcript; "
+            "use --degraded-mode only if speaker_0 is acceptable"
+        )
     if turns:
         labels: dict[str, str] = {}
         for item in words:
             midpoint = (item["start"] + item["end"]) / 2
-            for start, end, speaker in turns:
-                if start <= midpoint <= end:
-                    labels.setdefault(speaker, f"speaker_{len(labels)}")
-                    item["speaker_id"] = labels[speaker]
-                    break
-            item.setdefault("speaker_id", "speaker_0")
+            containing = [turn for turn in turns if turn[0] <= midpoint <= turn[1]]
+            selected = containing[0] if containing else min(turns, key=lambda turn: min(
+                abs(midpoint - turn[0]), abs(midpoint - turn[1])))
+            speaker = selected[2]
+            labels.setdefault(speaker, f"speaker_{len(labels)}")
+            item["speaker_id"] = labels[speaker]
     else:
         for item in words:
             item["speaker_id"] = "speaker_0"
-    events = detect_audio_events(audio_path)
+    events = detect_audio_events(audio_path, event_model, degraded_mode)
     combined = sorted(_insert_spacing(words) + events, key=lambda item: (item["start"],
                                                                           item["type"] != "audio_event"))
     return {"text": " ".join(item["text"] for item in words), "words": combined,
             "language_code": detected_language, "backend": "local",
-            "diarization": bool(turns), "audio_events": True}
+            "diarization": bool(turns), "audio_events": True,
+            "event_model": str(event_model or os.environ.get("LOCAL_EVENT_MODEL"))
+            if not degraded_mode else "degraded-heuristic",
+            "diarization_model": str(diarization_model or os.environ.get("LOCAL_DIARIZATION_MODEL"))
+            if not degraded_mode else "degraded-speaker_0"}
 
 
 def transcript_path(edit_dir: Path, video: Path, audio_track: int = 0) -> Path:
@@ -253,7 +410,9 @@ def transcript_path(edit_dir: Path, video: Path, audio_track: int = 0) -> Path:
 def transcribe_one(video: Path, edit_dir: Path, api_key: str | None = None,
                    language: str | None = None, num_speakers: int | None = None,
                    verbose: bool = True, audio_track: int = 0, backend: str = "local",
-                   model: str | None = None) -> Path:
+                   model: str | None = None, event_model: str | None = None,
+                   diarization_model: str | None = None,
+                   degraded_mode: bool = False) -> Path:
     transcripts_dir = edit_dir / "transcripts"
     transcripts_dir.mkdir(parents=True, exist_ok=True)
     out_path = transcript_path(edit_dir, video, audio_track)
@@ -278,7 +437,8 @@ def transcribe_one(video: Path, edit_dir: Path, api_key: str | None = None,
         if selected in ("elevenlabs", "scribe"):
             payload = call_scribe(audio, api_key or load_api_key(), language, num_speakers)
         elif selected == "local":
-            payload = transcribe_local(audio, language, num_speakers, model)
+            payload = transcribe_local(audio, language, num_speakers, model, event_model,
+                                       diarization_model, degraded_mode)
         else:
             raise ValueError(f"unknown transcription backend: {backend!r} (use local, auto, or elevenlabs)")
     out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -297,6 +457,12 @@ def main() -> None:
     ap.add_argument("--backend", choices=("local", "auto", "elevenlabs", "scribe"), default="local")
     ap.add_argument("--offline", action="store_true", help="Alias for --backend local; never contacts ElevenLabs")
     ap.add_argument("--model", default=None, help="Downloaded local ASR model directory/name")
+    ap.add_argument("--event-model", default=None,
+                    help="Downloaded local AudioSet classifier directory")
+    ap.add_argument("--diarization-model", default=None,
+                    help="Downloaded local pyannote pipeline directory")
+    ap.add_argument("--degraded-mode", action="store_true",
+                    help="Explicitly allow speaker_0 and the legacy event heuristic")
     args = ap.parse_args()
     video = args.video.resolve()
     if not video.exists():
@@ -304,7 +470,9 @@ def main() -> None:
     backend = "local" if args.offline else args.backend
     transcribe_one(video, (args.edit_dir or video.parent / "edit").resolve(),
                    language=args.language, num_speakers=args.num_speakers,
-                   audio_track=args.audio_track, backend=backend, model=args.model)
+                   audio_track=args.audio_track, backend=backend, model=args.model,
+                   event_model=args.event_model, diarization_model=args.diarization_model,
+                   degraded_mode=args.degraded_mode)
 
 
 if __name__ == "__main__":

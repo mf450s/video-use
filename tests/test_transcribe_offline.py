@@ -50,7 +50,8 @@ class OfflineTranscriptTests(unittest.TestCase):
              patch.dict(sys.modules, {"faster_whisper": fake_module}), \
              patch.object(transcribe, "detect_audio_events", return_value=[]), \
              patch.object(transcribe, "_speaker_segments", return_value=None):
-            result = transcribe.transcribe_local(Path("fixture.wav"), model=model_dir)
+            result = transcribe.transcribe_local(Path("fixture.wav"), model=model_dir,
+                                                 degraded_mode=True)
         self.assertEqual(result["backend"], "local")
         self.assertEqual(result["text"], "hello world")
         self.assertEqual([x["type"] for x in result["words"]], ["word", "spacing", "word"])
@@ -76,10 +77,38 @@ class OfflineTranscriptTests(unittest.TestCase):
 
     def test_audio_event_entries_are_not_words(self):
         with patch.object(transcribe, "_load_samples", return_value=(__import__("numpy").ones(16000), 16000)):
-            events = transcribe.detect_audio_events(Path("fixture.wav"))
+            events = transcribe.detect_audio_events(Path("fixture.wav"), degraded_mode=True)
         self.assertTrue(events)
         self.assertTrue(all(event["type"] == "audio_event" for event in events))
         self.assertIn(events[0]["text"], {"laughter", "applause"})
+
+    def test_audio_event_model_is_required_by_default(self):
+        with self.assertRaisesRegex(RuntimeError, "audio-event model is required"):
+            transcribe.detect_audio_events(Path("fixture.wav"))
+
+    def test_diarization_is_required_by_default(self):
+        with self.assertRaisesRegex(RuntimeError, "speaker diarization is required"):
+            transcribe._speaker_segments(Path("fixture.wav"), None)
+
+    def test_degraded_mode_is_explicit_in_result_metadata(self):
+        class FakeInfo:
+            language = "en"
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def transcribe(self, *args, **kwargs):
+                return iter([FakeSegment("hello", 0, 1, [FakeWord("hello", .1, .4)])]), FakeInfo()
+
+        fake_module = types.SimpleNamespace(WhisperModel=FakeModel)
+        with tempfile.TemporaryDirectory() as model_dir, \
+             patch.dict(sys.modules, {"faster_whisper": fake_module}), \
+             patch.object(transcribe, "_load_samples", return_value=(__import__("numpy").ones(16000), 16000)):
+            result = transcribe.transcribe_local(Path("fixture.wav"), model=model_dir,
+                                                 degraded_mode=True)
+        self.assertEqual(result["event_model"], "degraded-heuristic")
+        self.assertEqual(result["diarization_model"], "degraded-speaker_0")
 
 
 if __name__ == "__main__":
