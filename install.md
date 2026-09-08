@@ -35,7 +35,7 @@ python helpers/transcribe.py /path/to/clip.mp4 --offline \
 `faster-whisper` CPU int8 works on ordinary machines; CUDA needs a compatible NVIDIA
 runtime. The audio-event model uses Transformers and an AST AudioSet checkpoint. Model
 weights are not downloaded by the helper. For diarization, install `.[local-diarization]`
-and set `LOCAL_DIARIZATION_MODEL` to a complete local pyannote pipeline. Missing or
+and set `LOCAL_DIARIZATION_MODEL` to a complete local pyannote 4.x pipeline. Missing or
 broken event and diarization models fail in the normal path. Use `--degraded-mode` only
 when explicitly accepting `speaker_0` and the legacy event heuristic.
 

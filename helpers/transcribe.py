@@ -319,8 +319,14 @@ def _speaker_segments(wav_path: Path, num_speakers: int | None,
         diarization_pipeline = Pipeline.from_pretrained(str(path))
         kwargs = {} if num_speakers is None else {"num_speakers": num_speakers}
         diarization = diarization_pipeline(str(wav_path), **kwargs)
+        # pyannote.audio 4 returns DiarizeOutput; older releases return the
+        # Annotation directly. Prefer the exclusive annotation for word
+        # assignment because it contains no overlapping speaker turns.
+        annotation = getattr(diarization, "exclusive_speaker_diarization", None)
+        if annotation is None:
+            annotation = getattr(diarization, "speaker_diarization", diarization)
         return [(float(turn.start), float(turn.end), str(speaker))
-                for turn, _, speaker in diarization.itertracks(yield_label=True)]
+                for turn, _, speaker in annotation.itertracks(yield_label=True)]
     except Exception as exc:
         if degraded_mode:
             return None

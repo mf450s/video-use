@@ -90,6 +90,33 @@ class OfflineTranscriptTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "speaker diarization is required"):
             transcribe._speaker_segments(Path("fixture.wav"), None)
 
+    def test_pyannote_v4_diarize_output_is_normalised(self):
+        class FakeAnnotation:
+            def itertracks(self, yield_label=False):
+                return iter([(
+                    types.SimpleNamespace(start=0.0, end=1.0),
+                    None,
+                    "SPEAKER_00",
+                )])
+
+        annotation = FakeAnnotation()
+
+        class FakePipeline:
+            @classmethod
+            def from_pretrained(cls, path):
+                return cls()
+
+            def __call__(self, path, **kwargs):
+                return types.SimpleNamespace(
+                    exclusive_speaker_diarization=annotation,
+                    speaker_diarization=annotation,
+                )
+
+        with tempfile.TemporaryDirectory() as model_dir, \
+             patch.dict(sys.modules, {"pyannote.audio": types.SimpleNamespace(Pipeline=FakePipeline)}):
+            turns = transcribe._speaker_segments(Path("fixture.wav"), None, model=model_dir)
+        self.assertEqual(turns, [(0.0, 1.0, "SPEAKER_00")])
+
     def test_degraded_mode_is_explicit_in_result_metadata(self):
         class FakeInfo:
             language = "en"

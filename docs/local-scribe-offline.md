@@ -107,6 +107,29 @@ Inspect the transcript JSON for:
 
 Then inspect `takes_packed.md`, `master.srt`, the preview or final render, and the timeline QC PNG. A passing unit test with injected models is not a real-model E2E result.
 
+## verified strict offline E2E
+
+The strict real-model run was verified on 2026-09-08 in `/home/charon/projects/video-use`, branch `feat/local-scribe-offline`. The run used these pre-provisioned local model paths:
+
+| stage | verified path |
+|---|---|
+| ASR | `/home/charon/models/video-use/faster-whisper-base` |
+| audio events | `/home/charon/models/video-use/audioset-ast` |
+| diarization | `/home/charon/models/video-use/pyannote-community-1` |
+
+The run forced offline behavior with `HF_HUB_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_ENDPOINT=http://127.0.0.1:9`, `HTTP_PROXY=http://127.0.0.1:9`, `HTTPS_PROXY=http://127.0.0.1:9`, and `ALL_PROXY=http://127.0.0.1:9`. No ElevenLabs request or model download occurred.
+
+The reproducible regression command was:
+
+```bash
+cd /home/charon/projects/video-use
+./.venv/bin/python -m unittest discover -s tests -v
+```
+
+It completed with exit code `0`: `27` tests passed. The real transcription stage completed with exit code `0` and produced `28` word entries with valid timestamps, `speaker_0` and `speaker_1`, `diarization: true`, `backend: local`, `audio_events: true`, and an `applause` event with score `0.5311`. Pack completed with exit code `0` for one transcript and two phrases. Preview and full render completed with exit code `0`; the full render is `1920x1080`, `24/1` fps, `14.5` seconds, with subtitles and loudness normalization. Timeline QC completed with exit code `0` and found no missing frames, strong artifacts, or clipped subtitles in the sampled frames.
+
+Verified artifacts are under `/tmp/video-use-strict-e2e/takes/edit/`: `transcripts/take1.json`, `takes_packed.md`, `master.srt`, `final.mp4`, `final_full.mp4`, and `edit/verify/final_full_0.00-5.00.png`.
+
 ## resource and cost notes
 
 - Local ASR, event classification, diarization, packing, subtitles, render, and QC consume no ElevenLabs or LLM API tokens.
