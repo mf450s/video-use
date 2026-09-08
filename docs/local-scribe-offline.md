@@ -107,6 +107,21 @@ Inspect the transcript JSON for:
 
 Then inspect `takes_packed.md`, `master.srt`, the preview or final render, and the timeline QC PNG. A passing unit test with injected models is not a real-model E2E result.
 
+The repository includes `scripts/verify_local_scribe.py` as a non-mocked smoke gate. It refuses cached transcript output, validates local ASR, AudioSet, and pyannote files, requires word timestamps, at least two speakers, and both `laughter` and `applause`, and can optionally run pack, subtitle generation, and preview render. Missing prerequisites return exit code `77` with an explicit `SKIP` message; add `--require` to turn that into a failure. Example:
+
+```bash
+rm -rf /tmp/video_use_real_smoke/edit
+/home/charon/projects/video-use/.venv/bin/python \
+  /home/charon/projects/video-use/scripts/verify_local_scribe.py \
+  /tmp/video_use_real_smoke/input --edit-dir /tmp/video_use_real_smoke/edit \
+  --model /home/charon/.cache/huggingface/hub/models--Systran--faster-whisper-base/snapshots/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66 \
+  --event-model /home/charon/models/video-use/audioset-ast \
+  --diarization-model /home/charon/models/video-use/pyannote-community-1 \
+  --blackhole-proxy --require
+```
+
+Use a real fixture containing both event classes. Do not manufacture a laughter signal or use the degraded heuristic for this gate.
+
 ## verified strict offline E2E
 
 The strict real-model run was verified on 2026-09-08 in `/home/charon/projects/video-use`, branch `feat/local-scribe-offline`. The run used these pre-provisioned local model paths:
@@ -121,11 +136,26 @@ The runtime was isolated in `/home/charon/projects/video-use/.venv`. Verified ve
 
 The real-model batch run used `/tmp/video_use_e2e_network_guard/input/` and `/tmp/video_use_e2e_network_guard/edit/`. It forced `HF_HUB_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, and blackhole proxy/endpoint values at `127.0.0.1:9`. The command completed with exit code `0` and processed two real MP4 inputs without network access or ElevenLabs calls.
 
-The speech video produced `60` word entries with valid timestamps, `speaker_0` and `speaker_1`, `diarization: true`, and `backend: local`. A second real video input with the provisioned AudioSet model detected `applause` with score `0.8456`. `laughter` and `applause` are the only emitted event classes; a real laughter fixture was not available in this run and is therefore not claimed as observed.
+The speech video produced `64` word entries with valid timestamps, `speaker_0` and `speaker_1`, `diarization: true`, and `backend: local`. A second real video input with the provisioned AudioSet model detected `applause` with score `0.8456`. `laughter` and `applause` are the only emitted event classes; a real laughter fixture was not available in this run and is therefore not claimed as observed.
 
 Regression tests completed with exit code `0`: `28` tests passed. Pack completed with `2` transcripts and `6` phrases. Preview render completed with exit code `0`, produced `final.mp4`, `master.srt`, and loudness normalization. Timeline QC completed with exit code `0` and produced `timeline-qc.png`.
 
 Verified artifacts are under `/tmp/video_use_e2e_network_guard/edit/`: `transcripts/real_clip.json`, `transcripts/event_only.json`, `takes_packed.md`, `master.srt`, `final.mp4`, `edl.json`, and `timeline-qc.png`.
+
+### model provenance readback
+
+The following revisions and SHA-256 values were read back from the exact files used by the run. The revision is the Hugging Face snapshot tree ID; it is not inferred from a model name.
+
+| stage | repository | snapshot revision | runtime file | SHA-256 |
+|---|---|---|---|---|
+| ASR | `Systran/faster-whisper-base` | `ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66` | `model.bin` | `d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9` |
+| audio events | `MIT/ast-finetuned-audioset-10-10-0.4593` | `f826b80d28226b62986cc218e5cec390b1096902` | `model.safetensors` | `ae0c1e2ad4e1381d851fa9bf298ba13ebc9c5a914cdee2dbe427a6583869924d` |
+| diarization segmentation | `pyannote/speaker-diarization-community-1` | `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` | `segmentation/pytorch_model.bin` | `7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e` |
+| diarization embedding | `pyannote/speaker-diarization-community-1` | `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` | `embedding/pytorch_model.bin` | `6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929` |
+| diarization PLDA | `pyannote/speaker-diarization-community-1` | `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` | `plda/plda.npz` | `9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255` |
+| diarization transform | `pyannote/speaker-diarization-community-1` | `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` | `plda/xvec_transform.npz` | `325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f` |
+
+For a fresh readback, run `sha256sum` against the runtime files listed above and compare every value. The AST directory also contains a duplicate `pytorch_model.bin`; the run loaded `model.safetensors`. Model configuration files are part of the same local directories and are not optional.
 
 ## resource and cost notes
 
