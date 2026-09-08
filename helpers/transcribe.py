@@ -338,11 +338,19 @@ def _speaker_segments(wav_path: Path, num_speakers: int | None,
             os.environ["HF_HUB_OFFLINE"] = old_offline
 
 
+def _force_local_offline() -> None:
+    """Make local inference fail closed instead of attempting model downloads."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+
 def transcribe_local(audio_path: Path, language: str | None = None,
                      num_speakers: int | None = None, model: str | None = None,
                      event_model: str | None = None, diarization_model: str | None = None,
                      degraded_mode: bool = False) -> dict:
     """Run local ASR and return the compatible Scribe response shape."""
+    _force_local_offline()
     model_name = model or os.environ.get("LOCAL_ASR_MODEL")
     if not model_name:
         raise RuntimeError("local ASR model is not configured; install faster-whisper and set "

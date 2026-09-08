@@ -113,22 +113,19 @@ The strict real-model run was verified on 2026-09-08 in `/home/charon/projects/v
 
 | stage | verified path |
 |---|---|
-| ASR | `/home/charon/models/video-use/faster-whisper-base` |
+| ASR | `/home/charon/.cache/huggingface/hub/models--Systran--faster-whisper-base/snapshots/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66` |
 | audio events | `/home/charon/models/video-use/audioset-ast` |
 | diarization | `/home/charon/models/video-use/pyannote-community-1` |
 
-The run forced offline behavior with `HF_HUB_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_ENDPOINT=http://127.0.0.1:9`, `HTTP_PROXY=http://127.0.0.1:9`, `HTTPS_PROXY=http://127.0.0.1:9`, and `ALL_PROXY=http://127.0.0.1:9`. No ElevenLabs request or model download occurred.
+The runtime was isolated in `/home/charon/projects/video-use/.venv`. Verified versions were `faster-whisper 1.2.1`, `pyannote.audio 4.0.7`, `transformers 5.16.1`, `torch 2.14.0+cu130`, and `torchaudio 2.11.0+cu130`. The pyannote 4 `DiarizeOutput` compatibility path is covered by a regression test.
 
-The reproducible regression command was:
+The real-model batch run used `/tmp/video_use_e2e_network_guard/input/` and `/tmp/video_use_e2e_network_guard/edit/`. It forced `HF_HUB_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, and blackhole proxy/endpoint values at `127.0.0.1:9`. The command completed with exit code `0` and processed two real MP4 inputs without network access or ElevenLabs calls.
 
-```bash
-cd /home/charon/projects/video-use
-./.venv/bin/python -m unittest discover -s tests -v
-```
+The speech video produced `60` word entries with valid timestamps, `speaker_0` and `speaker_1`, `diarization: true`, and `backend: local`. A second real video input with the provisioned AudioSet model detected `applause` with score `0.8456`. `laughter` and `applause` are the only emitted event classes; a real laughter fixture was not available in this run and is therefore not claimed as observed.
 
-It completed with exit code `0`: `27` tests passed. The real transcription stage completed with exit code `0` and produced `28` word entries with valid timestamps, `speaker_0` and `speaker_1`, `diarization: true`, `backend: local`, `audio_events: true`, and an `applause` event with score `0.5311`. Pack completed with exit code `0` for one transcript and two phrases. Preview and full render completed with exit code `0`; the full render is `1920x1080`, `24/1` fps, `14.5` seconds, with subtitles and loudness normalization. Timeline QC completed with exit code `0` and found no missing frames, strong artifacts, or clipped subtitles in the sampled frames.
+Regression tests completed with exit code `0`: `28` tests passed. Pack completed with `2` transcripts and `6` phrases. Preview render completed with exit code `0`, produced `final.mp4`, `master.srt`, and loudness normalization. Timeline QC completed with exit code `0` and produced `timeline-qc.png`.
 
-Verified artifacts are under `/tmp/video-use-strict-e2e/takes/edit/`: `transcripts/take1.json`, `takes_packed.md`, `master.srt`, `final.mp4`, `final_full.mp4`, and `edit/verify/final_full_0.00-5.00.png`.
+Verified artifacts are under `/tmp/video_use_e2e_network_guard/edit/`: `transcripts/real_clip.json`, `transcripts/event_only.json`, `takes_packed.md`, `master.srt`, `final.mp4`, `edl.json`, and `timeline-qc.png`.
 
 ## resource and cost notes
 

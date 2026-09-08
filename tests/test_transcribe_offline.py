@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import sys
 import tempfile
 import types
@@ -74,6 +75,18 @@ class OfflineTranscriptTests(unittest.TestCase):
     def test_local_model_failure_is_clear(self):
         with self.assertRaisesRegex(RuntimeError, "model path does not exist"):
             transcribe.transcribe_local(Path("fixture.wav"), model="missing")
+
+    def test_local_path_forces_offline_environment(self):
+        with patch.dict(os.environ, {
+            "HF_HUB_OFFLINE": "0",
+            "HF_DATASETS_OFFLINE": "0",
+            "TRANSFORMERS_OFFLINE": "0",
+        }):
+            with self.assertRaisesRegex(RuntimeError, "local ASR model is not configured"):
+                transcribe.transcribe_local(Path("fixture.wav"))
+            self.assertEqual(os.environ["HF_HUB_OFFLINE"], "1")
+            self.assertEqual(os.environ["HF_DATASETS_OFFLINE"], "1")
+            self.assertEqual(os.environ["TRANSFORMERS_OFFLINE"], "1")
 
     def test_audio_event_entries_are_not_words(self):
         with patch.object(transcribe, "_load_samples", return_value=(__import__("numpy").ones(16000), 16000)):
