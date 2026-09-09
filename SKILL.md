@@ -59,7 +59,8 @@ The skill lives in `video-use/`. User footage lives wherever they put it. All se
 
 First-time install lives in `install.md` (clone, deps, ffmpeg, skill registration, API key). Don't re-run it every session; on cold start just verify:
 
-- `ELEVENLABS_API_KEY` resolves — either in the environment or in `.env` at the video-use repo root. If missing, ask the user to paste one and write it to `.env` (never to the user's `<videos_dir>`).
+- For offline work, downloaded local ASR, audio-event, and diarization models are available. `LOCAL_ASR_MODEL`/`--model`, `LOCAL_EVENT_MODEL`/`--event-model`, and `LOCAL_DIARIZATION_MODEL`/`--diarization-model` point to them. No API key or network is needed.
+- For hosted quality, `ELEVENLABS_API_KEY` may be set in the environment or `.env`; ask only when the user selects the ElevenLabs backend.
 - `ffmpeg` + `ffprobe` on PATH.
 - Python deps installed (`uv sync` or `pip install -e .` inside the repo).
 - Node.js + npm available if the session needs HyperFrames or Remotion slots. HyperFrames currently requires Node.js 22+.
@@ -71,8 +72,8 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 
 ## Helpers
 
-- **`transcribe.py <video>`** — single-file Scribe call. `--num-speakers N` optional. Cached.
-- **`transcribe_batch.py <videos_dir>`** — 4-worker parallel transcription. Use for multi-take.
+- **`transcribe.py <video>`** — strict local/offline Whisper plus local event classification and pyannote diarization by default; use `--model`, `--event-model`, `--diarization-model`, and `--offline`. `--degraded-mode` is an explicit non-production fallback. `--backend elevenlabs` selects hosted Scribe. Cached.
+- **`transcribe_batch.py <videos_dir>`** — batch transcription (local models default to one worker to avoid duplicate memory). Use `--offline --model <downloaded-model>` for multi-take.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.

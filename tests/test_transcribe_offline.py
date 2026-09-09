@@ -1,0 +1,155 @@
+import importlib.util
+import os
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+MODULE_PATH = Path(__file__).parents[1] / "helpers" / "transcribe.py"
+SPEC = importlib.util.spec_from_file_location("video_use_transcribe", MODULE_PATH)
+assert SPEC and SPEC.loader
+transcribe = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(transcribe)
+
+
+class FakeWord:
+    def __init__(self, word, start, end):
+        self.word, self.start, self.end = word, start, end
+
+
+class FakeSegment:
+    def __init__(self, text, start, end, words):
+        self.text, self.start, self.end, self.words = text, start, end, words
+
+
+class OfflineTranscriptTests(unittest.TestCase):
+    def test_normalises_word_timestamps_and_preserves_gaps(self):
+        words = transcribe._normalise_asr_segments([
+            FakeSegment("hello world", 0, 1, [FakeWord("hello", .1, .4), FakeWord("world", .6, .9)])
+        ])
+        result = transcribe._insert_spacing(words)
+        self.assertEqual(result[1]["type"], "spacing")
+        self.assertEqual((result[1]["start"], result[1]["end"]), (.4, .6))
+        self.assertEqual([x["text"] for x in result if x["type"] == "word"], ["hello", "world"])
+
+    def test_local_backend_shape_with_injected_whisper(self):
+        class FakeInfo:
+            language = "en"
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def transcribe(self, *args, **kwargs):
+                return iter([FakeSegment("hello world", 0, 1,
+                                         [FakeWord("hello", .1, .4), FakeWord("world", .6, .9)])]), FakeInfo()
+
+        fake_module = types.SimpleNamespace(WhisperModel=FakeModel)
+        with tempfile.TemporaryDirectory() as model_dir, \
+             patch.dict(sys.modules, {"faster_whisper": fake_module}), \
+             patch.object(transcribe, "detect_audio_events", return_value=[]), \
+             patch.object(transcribe, "_speaker_segments", return_value=None):
+            result = transcribe.transcribe_local(Path("fixture.wav"), model=model_dir,
+                                                 degraded_mode=True)
+        self.assertEqual(result["backend"], "local")
+        self.assertEqual(result["text"], "hello world")
+        self.assertEqual([x["type"] for x in result["words"]], ["word", "spacing", "word"])
+        self.assertEqual(result["words"][0]["speaker_id"], "speaker_0")
+
+    def test_local_transcribe_one_never_reads_api_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "clip.mp4"
+            video.write_bytes(b"fixture")
+            with patch.object(transcribe, "count_audio_tracks", return_value=1), \
+                 patch.object(transcribe, "extract_audio"), \
+                 patch.object(transcribe, "peak_dbfs", return_value=-10.0), \
+                 patch.object(transcribe, "transcribe_local", return_value={"words": []}), \
+                 patch.object(transcribe, "load_api_key", side_effect=AssertionError("API key read")):
+                result = transcribe.transcribe_one(video, root / "edit", backend="local")
+            self.assertTrue(result.exists())
+            self.assertEqual(result.parent.name, "transcripts")
+
+    def test_local_model_failure_is_clear(self):
+        with self.assertRaisesRegex(RuntimeError, "model path does not exist"):
+            transcribe.transcribe_local(Path("fixture.wav"), model="missing")
+
+    def test_local_path_forces_offline_environment(self):
+        with patch.dict(os.environ, {
+            "HF_HUB_OFFLINE": "0",
+            "HF_DATASETS_OFFLINE": "0",
+            "TRANSFORMERS_OFFLINE": "0",
+        }):
+            with self.assertRaisesRegex(RuntimeError, "local ASR model is not configured"):
+                transcribe.transcribe_local(Path("fixture.wav"))
+            self.assertEqual(os.environ["HF_HUB_OFFLINE"], "1")
+            self.assertEqual(os.environ["HF_DATASETS_OFFLINE"], "1")
+            self.assertEqual(os.environ["TRANSFORMERS_OFFLINE"], "1")
+
+    def test_audio_event_entries_are_not_words(self):
+        with patch.object(transcribe, "_load_samples", return_value=(__import__("numpy").ones(16000), 16000)):
+            events = transcribe.detect_audio_events(Path("fixture.wav"), degraded_mode=True)
+        self.assertTrue(events)
+        self.assertTrue(all(event["type"] == "audio_event" for event in events))
+        self.assertIn(events[0]["text"], {"laughter", "applause"})
+
+    def test_audio_event_model_is_required_by_default(self):
+        with self.assertRaisesRegex(RuntimeError, "audio-event model is required"):
+            transcribe.detect_audio_events(Path("fixture.wav"))
+
+    def test_diarization_is_required_by_default(self):
+        with self.assertRaisesRegex(RuntimeError, "speaker diarization is required"):
+            transcribe._speaker_segments(Path("fixture.wav"), None)
+
+    def test_pyannote_v4_diarize_output_is_normalised(self):
+        class FakeAnnotation:
+            def itertracks(self, yield_label=False):
+                return iter([(
+                    types.SimpleNamespace(start=0.0, end=1.0),
+                    None,
+                    "SPEAKER_00",
+                )])
+
+        annotation = FakeAnnotation()
+
+        class FakePipeline:
+            @classmethod
+            def from_pretrained(cls, path):
+                return cls()
+
+            def __call__(self, path, **kwargs):
+                return types.SimpleNamespace(
+                    exclusive_speaker_diarization=annotation,
+                    speaker_diarization=annotation,
+                )
+
+        with tempfile.TemporaryDirectory() as model_dir, \
+             patch.dict(sys.modules, {"pyannote.audio": types.SimpleNamespace(Pipeline=FakePipeline)}):
+            turns = transcribe._speaker_segments(Path("fixture.wav"), None, model=model_dir)
+        self.assertEqual(turns, [(0.0, 1.0, "SPEAKER_00")])
+
+    def test_degraded_mode_is_explicit_in_result_metadata(self):
+        class FakeInfo:
+            language = "en"
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def transcribe(self, *args, **kwargs):
+                return iter([FakeSegment("hello", 0, 1, [FakeWord("hello", .1, .4)])]), FakeInfo()
+
+        fake_module = types.SimpleNamespace(WhisperModel=FakeModel)
+        with tempfile.TemporaryDirectory() as model_dir, \
+             patch.dict(sys.modules, {"faster_whisper": fake_module}), \
+             patch.object(transcribe, "_load_samples", return_value=(__import__("numpy").ones(16000), 16000)):
+            result = transcribe.transcribe_local(Path("fixture.wav"), model=model_dir,
+                                                 degraded_mode=True)
+        self.assertEqual(result["event_model"], "degraded-heuristic")
+        self.assertEqual(result["diarization_model"], "degraded-speaker_0")
+
+
+if __name__ == "__main__":
+    unittest.main()

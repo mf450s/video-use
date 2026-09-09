@@ -6,7 +6,7 @@
 
 Introducing **video-use** — edit videos with Claude Code. 100% open source.
 
-Drop raw footage in a folder, chat with Claude Code, get `final.mp4` back. Works for any content — talking heads, montages, tutorials, travel, interviews — without presets or menus.
+Drop raw footage in a folder, chat with Claude Code, get `final.mp4` back. Works for any content — talking heads, montages, tutorials, travel, interviews — without presets or menus. Transcription is local/offline by default; hosted ElevenLabs Scribe remains an optional backend.
 
 Try video-use in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_campaign=video-use-use-in-cloud&utm_source=github).
 
@@ -27,10 +27,10 @@ Paste into Claude Code, Codex, Hermes, Openclaw, or any agent with shell access:
 ```text
 Set up https://github.com/browser-use/video-use for me.
 
-Read install.md first to install this repo, wire up ffmpeg, register the skill with whichever agent you're running under, and set up the ElevenLabs API key — ask me to paste it when you need it. Then read SKILL.md for daily usage, and always read helpers/ because that's where the editing scripts live. After install, don't transcribe anything on your own — just tell me it's ready and wait for me to drop footage into a folder.
+Read install.md first to install this repo, wire up ffmpeg, register the skill with whichever agent you're running under, and configure local Whisper transcription (or ask before enabling hosted ElevenLabs). Then read SKILL.md for daily usage, and always read helpers/ because that's where the editing scripts live. After install, don't transcribe anything on your own — just tell me it's ready and wait for me to drop footage into a folder.
 ```
 
-The agent handles the clone, dependencies, skill registration, and prompts you once for your ElevenLabs API key (grab one at [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys)).
+The agent handles the clone, dependencies, and skill registration. Local mode needs a pre-provisioned Whisper model; hosted mode optionally uses an ElevenLabs key (grab one at [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys)).
 
 Then point your agent at a folder of raw takes:
 
@@ -63,10 +63,35 @@ uv sync                         # or: pip install -e .
 brew install ffmpeg             # required
 brew install yt-dlp             # optional, for downloading online sources
 
-# 3. Add your ElevenLabs API key
-cp .env.example .env
-$EDITOR .env                    # ELEVENLABS_API_KEY=...
+# 3. Optional: install local ASR support
+pip install -e '.[local-transcription]'
+# Provision a Whisper/faster-whisper model directory separately (no runtime download).
+export LOCAL_ASR_MODEL=/models/whisper-small
 ```
+
+## Offline transcription
+
+```bash
+python helpers/transcribe.py clip.mp4 --offline --model /models/faster-whisper-base \
+  --event-model /models/audioset-ast --diarization-model /models/pyannote-community-1
+python helpers/transcribe_batch.py ./takes --offline --workers 1 \
+  --model /models/faster-whisper-base --event-model /models/audioset-ast \
+  --diarization-model /models/pyannote-community-1
+python helpers/pack_transcripts.py --edit-dir ./takes/edit
+python helpers/render.py ./takes/edit/edl.json -o ./takes/edit/final.mp4 --preview
+```
+
+Local output preserves the Scribe-compatible top-level `words` list (`word`, `spacing`,
+and `audio_event` entries), including word timestamps and speaker IDs. The strict local
+path requires three pre-provisioned model directories: faster-whisper for ASR,
+`MIT/ast-finetuned-audioset-10-10-0.4593` for laughter/applause classification, and a
+local pyannote diarization pipeline. Missing or broken event/diarization models fail
+clearly instead of silently degrading. `--degraded-mode` is an explicit fallback for
+speaker_0 plus the legacy signal heuristic and is not a full Scribe replacement.
+See [`docs/local-scribe-offline.md`](docs/local-scribe-offline.md) for provisioning,
+offline verification, hardware requirements, and cost boundaries. Use
+`--backend elevenlabs` only when you explicitly want the hosted service and have
+`ELEVENLABS_API_KEY`; `--backend auto` prefers it when a key exists.
 
 ## How it works
 
@@ -76,7 +101,7 @@ The LLM never watches the video. It **reads** it — through two layers that tog
   <img src="static/timeline-view.svg" alt="timeline_view composite — filmstrip + speaker track + waveform + word labels + silence-gap cut candidates" width="100%">
 </p>
 
-**Layer 1 — Audio transcript (always loaded).** One ElevenLabs Scribe call per source gives word-level timestamps, speaker diarization, and audio events (`(laughter)`, `(applause)`, `(sigh)`). All takes pack into a single ~12KB `takes_packed.md` — the LLM's primary reading view.
+**Layer 1 — Audio transcript (always loaded).** The local Whisper backend (or optional ElevenLabs Scribe backend) gives word-level timestamps, speaker IDs, and best-effort audio events (`(laughter)`, `(applause)`). All takes pack into a single `takes_packed.md` — the LLM's primary reading view.
 
 ```
 ## C0103  (duration: 43.0s, 8 phrases)

@@ -1,6 +1,6 @@
 ---
 name: video-use-install
-description: Install video-use into the current agent (Claude Code, Codex, Hermes, Openclaw, etc.) and wire up ffmpeg + the ElevenLabs API key so the user can start editing immediately.
+description: Install video-use into the current agent and configure ffmpeg plus local/offline or optional ElevenLabs transcription.
 ---
 
 # video-use install
@@ -14,8 +14,33 @@ You're setting up a conversation-driven video editor for the user. After install
 Three things must exist on this machine:
 
 1. The `video-use` repo cloned somewhere stable.
-2. `ffmpeg` on `$PATH` (plus optional `yt-dlp` for online sources).
-3. An ElevenLabs API key in `.env` at the repo root (for Scribe transcription).
+2. `ffmpeg` and `ffprobe` on `$PATH` (plus optional `yt-dlp` for online sources).
+3. Provisioned local ASR, audio-event, and diarization models (offline mode), or an ElevenLabs API key (hosted mode).
+
+## Local/offline mode (recommended when no key/network is allowed)
+
+Install the optional local dependencies and provision all model weights ahead of time:
+
+```bash
+pip install -e '.[local-transcription]'
+pip install -e '.[local-events,local-diarization]'
+export LOCAL_ASR_MODEL=/models/faster-whisper-base
+export LOCAL_EVENT_MODEL=/models/audioset-ast
+export LOCAL_DIARIZATION_MODEL=/models/pyannote-community-1
+python helpers/transcribe.py /path/to/clip.mp4 --offline \
+  --model "$LOCAL_ASR_MODEL" --event-model "$LOCAL_EVENT_MODEL" \
+  --diarization-model "$LOCAL_DIARIZATION_MODEL"
+```
+
+`faster-whisper` CPU int8 works on ordinary machines; CUDA needs a compatible NVIDIA
+runtime. The audio-event model uses Transformers and an AST AudioSet checkpoint. Model
+weights are not downloaded by the helper. For diarization, install `.[local-diarization]`
+and set `LOCAL_DIARIZATION_MODEL` to a complete local pyannote 4.x pipeline. Missing or
+broken event and diarization models fail in the normal path. Use `--degraded-mode` only
+when explicitly accepting `speaker_0` and the legacy event heuristic.
+
+See `docs/local-scribe-offline.md` for exact model repositories, provisioning commands,
+offline network checks, and the real-model E2E sequence.
 
 And one thing must be true about the current agent:
 
@@ -89,9 +114,11 @@ Figure out which agent you are running under, and register once. A symlink of th
 
 If you can't tell which agent you're in, ask the user once: "which agent am I running under — Claude Code, Codex, or something else?" Then pick the right target.
 
-### 5. ElevenLabs API key
+### 5. Optional ElevenLabs API key
 
-Scribe (ElevenLabs) does all transcription. Without a key, nothing transcribes.
+Hosted Scribe is optional. Local mode does not read or require `ELEVENLABS_API_KEY`.
+Only perform this step when the user explicitly selects `--backend elevenlabs` (or
+`--backend auto` with a key available).
 
 1. Check existing state in this order and stop at the first hit:
 

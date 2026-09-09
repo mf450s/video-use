@@ -14,6 +14,11 @@ dependencies = [
 
 [project.optional-dependencies]
 animations = ["manim"]
+# Install only when using a downloaded local Whisper model. These packages never
+# download weights automatically in --offline mode.
+local-transcription = ["faster-whisper>=1.0"]
+local-events = ["torch>=2.2", "torchaudio>=2.2", "transformers>=4.40", "soundfile>=0.12"]
+local-diarization = ["pyannote.audio>=4.0,<5"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
